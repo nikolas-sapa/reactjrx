@@ -1,4 +1,4 @@
-import { type DependencyList, useEffect, useRef } from "react"
+import { type DependencyList, useRef } from "react"
 import type { Observable } from "rxjs"
 import { arrayEqual, useLiveRef } from "../../utils"
 import { ObservableStore } from "./store"
@@ -19,7 +19,8 @@ type StoreReference<T, DefaultValue> = {
  * would force us to update the store asynchronously in a useEffect. Losing at least one render cycle.
  * - We are left with using refs to hold the latest references. We use comparison with given deps as well.
  * We are re-creating store during render cycles which is normally not recommended.
- * However this is "okay" since it is to be used inside a useSyncExternalStore and not directly in a render.
+ * The store only holds its source until `useSyncExternalStore` subscribes to it,
+ * and releases it on its own when the render never commits.
  */
 export const useStore = <T, DefaultValue>(
   source$: Observable<T> | undefined | (() => Observable<T> | undefined),
@@ -52,14 +53,5 @@ export const useStore = <T, DefaultValue>(
     storeRef.current = { deps, store }
   }
 
-  const store = storeRef.current.store
-
-  useEffect(
-    () => () => {
-      store.sub.unsubscribe()
-    },
-    [store],
-  )
-
-  return store
+  return storeRef.current.store
 }
