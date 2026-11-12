@@ -1,5 +1,5 @@
-import { renderHook, waitFor } from "@testing-library/react"
-import { StrictMode } from "react"
+import { act, render, renderHook, waitFor } from "@testing-library/react"
+import { StrictMode, Suspense, use } from "react"
 import { createRoot } from "react-dom/client"
 import { describe, expect, it, vi } from "vitest"
 import { waitForTimeout } from "../../../tests/utils"
@@ -745,5 +745,59 @@ describe("Given an entry added later with nothing stored", () => {
     })
 
     expect(signalB.getValue()).toBe(3)
+  })
+})
+
+describe("Given a render that React throws away", () => {
+  it("should neither read the adapter for it nor save the signals after unmount", {
+    timeout: 3000,
+  }, async () => {
+    const signalA = signal({ default: 0, key: "a" })
+    const adapter = createMemoryAdapter({ a: storedValue(1) })
+    const entries: Entries = [{ signal: signalA, version: 0 }]
+    let resolve = () => {}
+    const promise = new Promise<void>((resolvePromise) => {
+      resolve = resolvePromise
+    })
+
+    function Suspends() {
+      "use no memo"
+      use(promise)
+
+      return null
+    }
+
+    function App() {
+      "use no memo"
+      usePersistSignals({ entries, adapter })
+
+      return <Suspends />
+    }
+
+    const { unmount } = await act(async () =>
+      render(
+        <Suspense fallback={null}>
+          <App />
+        </Suspense>,
+      ),
+    )
+
+    expect(adapter.calls.getItem).toBe(0)
+
+    await act(async () => {
+      resolve()
+      await promise
+    })
+    await waitFor(() => expect(signalA.getValue()).toBe(1))
+    await waitForTimeout(600)
+
+    expect(adapter.calls.getItem).toBe(1)
+
+    unmount()
+    adapter.calls.setItem = 0
+    signalA.update(42)
+    await waitForTimeout(700)
+
+    expect(adapter.calls.setItem).toBe(0)
   })
 })

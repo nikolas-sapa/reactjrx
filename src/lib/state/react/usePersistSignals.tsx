@@ -1,15 +1,15 @@
+import { useEffect, useState } from "react"
 import { map, merge, of, scan, switchMap } from "rxjs"
 import { useLiveBehaviorSubject } from "../../binding/useLiveBehaviorSubject"
-import { useObserve } from "../../binding/useObserve/useObserve"
 import { useLiveRef } from "../../utils/react/useLiveRef"
-import { isShallowEqual } from "../../utils/shallowEqual"
 import type { Adapter } from "../persistence/adapters/Adapter"
 import { persistSignals } from "../persistence/persistSignals"
 import type { SignalPersistenceConfig } from "../persistence/types"
 
 /**
  * Hydrates the signals of `entries` from `adapter`, then persists their
- * updates to it.
+ * updates to it. It starts once the component has mounted: a render that
+ * never commits, and a server render, read and write nothing.
  *
  * `isHydrated` becomes `true` once the entries have been hydrated for the
  * first time. Entries added later do not change it. It is reset when the
@@ -50,53 +50,69 @@ export function usePersistSignals({
   const adapterSubject = useLiveBehaviorSubject(adapter)
   const entriesSubject = useLiveBehaviorSubject(entries)
 
-  const result = useObserve(
-    () =>
-      adapterSubject.pipe(
-        /**
-         * Becomes true once a second, different adapter is passed, and stays
-         * true: from then on, a value in memory may come from another adapter
-         * than the current one. The same adapter coming back after a gap
-         * without adapter (a sign-out, for example) is not a different one.
-         */
-        scan(
-          (previous, adapter) => {
-            const firstAdapter = previous.firstAdapter ?? adapter
+  const [result, setResult] = useState({ isHydrated: false })
 
-            return {
-              adapter,
-              firstAdapter,
-              replacesAnother:
-                previous.replacesAnother ||
-                (!!adapter && adapter !== firstAdapter),
-            }
-          },
-          {
-            adapter: undefined as Adapter | undefined,
-            firstAdapter: undefined as Adapter | undefined,
-            replacesAnother: false,
-          },
-        ),
-        switchMap(({ adapter, replacesAnother }) => {
-          if (!adapter) return of({ type: "reset" as const })
+  /**
+   * Persisting reads and writes the adapter, so it starts in an effect: a
+   * render that never commits, and a server render, must not touch storage.
+   */
+  useEffect(
+    function persistWhileMounted() {
+      const subscription = adapterSubject
+        .pipe(
+          /**
+           * Becomes true once a second, different adapter is passed, and stays
+           * true: from then on, a value in memory may come from another adapter
+           * than the current one. The same adapter coming back after a gap
+           * without adapter (a sign-out, for example) is not a different one.
+           */
+          scan(
+            (previous, adapter) => {
+              const firstAdapter = previous.firstAdapter ?? adapter
 
-          return merge(
-            of({ type: "reset" as const }),
-            persistSignals({
-              adapter,
-              entries$: entriesSubject,
-              resetToDefault: replacesAnother,
-              onHydrated: () => {
-                onHydratedRef.current?.()
-              },
-            }),
+              return {
+                adapter,
+                firstAdapter,
+                replacesAnother:
+                  previous.replacesAnother ||
+                  (!!adapter && adapter !== firstAdapter),
+              }
+            },
+            {
+              adapter: undefined as Adapter | undefined,
+              firstAdapter: undefined as Adapter | undefined,
+              replacesAnother: false,
+            },
+          ),
+          switchMap(({ adapter, replacesAnother }) => {
+            if (!adapter) return of({ type: "reset" as const })
+
+            return merge(
+              of({ type: "reset" as const }),
+              persistSignals({
+                adapter,
+                entries$: entriesSubject,
+                resetToDefault: replacesAnother,
+                onHydrated: () => {
+                  onHydratedRef.current?.()
+                },
+              }),
+            )
+          }),
+          map((event) => event.type === "hydrated"),
+        )
+        .subscribe((isHydrated) => {
+          setResult((current) =>
+            current.isHydrated === isHydrated ? current : { isHydrated },
           )
-        }),
-        map((event) => ({ isHydrated: event.type === "hydrated" })),
-      ),
-    { defaultValue: { isHydrated: false }, compareFn: isShallowEqual },
-    [adapterSubject, entriesSubject],
+        })
+
+      return () => {
+        subscription.unsubscribe()
+      }
+    },
+    [adapterSubject, entriesSubject, onHydratedRef],
   )
 
-  return result.data
+  return result
 }
