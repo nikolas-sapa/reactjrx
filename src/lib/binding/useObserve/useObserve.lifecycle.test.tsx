@@ -8,13 +8,10 @@ import {
   use,
   useState,
 } from "react"
-import { BehaviorSubject } from "rxjs"
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { BehaviorSubject, of } from "rxjs"
+import { afterEach, describe, expect, it, vi } from "vitest"
 import { countSubscriptions } from "../../../tests/liveQuery"
-import { ObservableStore } from "./store"
 import { useObserve } from "./useObserve"
-
-const UNCOMMITTED_RENDER_HOLD_MS = 10_000
 
 const createPendingPromise = () => {
   let resolve = () => {}
@@ -40,8 +37,12 @@ class CatchError extends Component<
   }
 }
 
+afterEach(() => {
+  vi.restoreAllMocks()
+})
+
 describe("Given a render that React commits", () => {
-  it("holds one subscription to the source while mounted, and none once unmounted", () => {
+  it("subscribes once to the source while mounted, and unsubscribes once unmounted", () => {
     const { counted$, subscriptions } = countSubscriptions(
       new BehaviorSubject(1),
     )
@@ -63,7 +64,7 @@ describe("Given a render that React commits", () => {
     expect(subscriptions.open).toBe(0)
   })
 
-  it("holds one subscription to the new source once the deps change", () => {
+  it("subscribes to the new source once the deps change, and unsubscribes from the old one", () => {
     const first = countSubscriptions(new BehaviorSubject(1))
     const second = countSubscriptions(new BehaviorSubject(2))
 
@@ -82,28 +83,47 @@ describe("Given a render that React commits", () => {
     rerender(<Observer source="second" />)
 
     expect(container.textContent).toBe("2")
-    expect([first.subscriptions.open, second.subscriptions.open]).toEqual([
-      0, 1,
-    ])
+    expect(first.subscriptions).toEqual({ made: 1, open: 0 })
+    expect(second.subscriptions).toEqual({ made: 1, open: 1 })
+  })
+
+  it("renders the value of a BehaviorSubject on the first render, and renders once", () => {
+    const statuses: string[] = []
+    const source$ = new BehaviorSubject("value")
+
+    function Observer() {
+      "use no memo"
+      const { data, status } = useObserve(source$)
+      statuses.push(`${status}:${data}`)
+
+      return null
+    }
+
+    render(<Observer />)
+
+    expect(statuses).toEqual(["success:value"])
+  })
+
+  it("is pending on the first render for a source that holds no value, then has the value it emits on subscription", () => {
+    const statuses: string[] = []
+    const source$ = of("value")
+
+    function Observer() {
+      "use no memo"
+      const { data, status } = useObserve(source$)
+      statuses.push(`${status}:${data}`)
+
+      return null
+    }
+
+    render(<Observer />)
+
+    expect(statuses).toEqual(["pending:undefined", "success:value"])
   })
 })
 
 describe("Given a render that React throws away", () => {
-  beforeEach(() => {
-    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] })
-  })
-
-  afterEach(() => {
-    vi.useRealTimers()
-    vi.restoreAllMocks()
-  })
-
-  const releaseUncommittedRenders = () =>
-    act(async () => {
-      vi.advanceTimersByTime(UNCOMMITTED_RENDER_HOLD_MS)
-    })
-
-  it("releases the subscription of a mount that a Suspense boundary threw away", async () => {
+  it("subscribes to nothing for a mount that a Suspense boundary threw away", async () => {
     const { counted$, subscriptions } = countSubscriptions(
       new BehaviorSubject(1),
     )
@@ -132,17 +152,21 @@ describe("Given a render that React throws away", () => {
       ),
     )
 
+    expect(subscriptions.made).toBe(0)
+
     await act(async () => {
       resolve()
       await promise
     })
+
+    expect(subscriptions).toEqual({ made: 1, open: 1 })
+
     unmount()
-    await releaseUncommittedRenders()
 
     expect(subscriptions.open).toBe(0)
   })
 
-  it("releases the subscription of a render that an error boundary caught", async () => {
+  it("subscribes to nothing for a render that an error boundary caught", () => {
     const { counted$, subscriptions } = countSubscriptions(
       new BehaviorSubject(1),
     )
@@ -155,19 +179,16 @@ describe("Given a render that React throws away", () => {
       throw new Error("render failed")
     }
 
-    const { unmount } = render(
+    render(
       <CatchError>
         <Throws />
       </CatchError>,
     )
 
-    unmount()
-    await releaseUncommittedRenders()
-
-    expect(subscriptions.open).toBe(0)
+    expect(subscriptions.made).toBe(0)
   })
 
-  it("releases the subscription of a render that a transition abandoned", async () => {
+  it("subscribes to nothing for the render of a transition that React abandoned", async () => {
     const sources = [1, 2, 3].map((value) =>
       countSubscriptions(new BehaviorSubject(value)),
     )
@@ -196,7 +217,7 @@ describe("Given a render that React throws away", () => {
       )
     }
 
-    const { unmount } = render(
+    const { unmount, container } = render(
       <Suspense fallback={null}>
         <Observer />
       </Suspense>,
@@ -208,15 +229,18 @@ describe("Given a render that React throws away", () => {
     await act(async () => {
       setStep(2)
     })
-    unmount()
-    await releaseUncommittedRenders()
 
-    expect(sources.map(({ subscriptions }) => subscriptions.open)).toEqual([
-      0, 0, 0,
+    expect(container.textContent).toBe("3")
+    expect(sources.map(({ subscriptions }) => subscriptions)).toEqual([
+      { made: 1, open: 0 },
+      { made: 0, open: 0 },
+      { made: 1, open: 1 },
     ])
+
+    unmount()
   })
 
-  it("releases the subscription of a mount in a hidden Activity that unmounts", async () => {
+  it("subscribes to nothing for a mount in a hidden Activity, until it shows", async () => {
     const { counted$, subscriptions } = countSubscriptions(
       new BehaviorSubject(1),
     )
@@ -228,87 +252,89 @@ describe("Given a render that React throws away", () => {
       return null
     }
 
-    const { unmount } = await act(async () =>
-      render(
-        <Activity mode="hidden">
-          <Observer />
-        </Activity>,
-      ),
+    const App = ({ mode }: { mode: "visible" | "hidden" }) => (
+      <Activity mode={mode}>
+        <Observer />
+      </Activity>
     )
 
-    unmount()
-    await releaseUncommittedRenders()
-
-    expect(subscriptions.open).toBe(0)
-  })
-
-  it("keeps a thrown away render's subscription until the hold ends, then releases it", async () => {
-    const { counted$, subscriptions } = countSubscriptions(
-      new BehaviorSubject(1),
+    const { rerender, unmount } = await act(async () =>
+      render(<App mode="hidden" />),
     )
 
-    function Throws(): ReactNode {
-      "use no memo"
-      useObserve(counted$)
-
-      throw new Error("render failed")
-    }
-
-    vi.spyOn(console, "error").mockImplementation(() => {})
-    const { unmount } = render(
-      <CatchError>
-        <Throws />
-      </CatchError>,
-    )
-    unmount()
+    expect(subscriptions.made).toBe(0)
 
     await act(async () => {
-      vi.advanceTimersByTime(UNCOMMITTED_RENDER_HOLD_MS - 1)
+      rerender(<App mode="visible" />)
     })
 
-    expect(subscriptions.open).toBeGreaterThan(0)
+    expect(subscriptions).toEqual({ made: 1, open: 1 })
 
-    await act(async () => {
-      vi.advanceTimersByTime(1)
-    })
+    unmount()
 
     expect(subscriptions.open).toBe(0)
   })
 })
 
-describe("Given a store that React subscribes to after its hold ended", () => {
-  beforeEach(() => {
-    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] })
-  })
+describe("Given a transition that suspends, then an unrelated urgent render", () => {
+  it("keeps the committed subscription, and subscribes once to the source of the transition", async () => {
+    const sources = [0, 1].map((value) =>
+      countSubscriptions(new BehaviorSubject(value)),
+    )
+    const pending = createPendingPromise()
+    let setStep = (_step: number) => {}
+    let setUnrelated = (_value: number) => {}
 
-  afterEach(() => {
-    vi.useRealTimers()
-  })
+    function Suspends({ step }: { step: number }) {
+      "use no memo"
+      if (step === 1) use(pending.promise)
 
-  it("subscribes to the source again, and keeps its values", () => {
-    const subject = new BehaviorSubject(1)
-    const { counted$, subscriptions } = countSubscriptions(subject)
-    const store = new ObservableStore({
-      source$: counted$,
-      defaultValue: undefined,
-      compareFn: undefined,
+      return null
+    }
+
+    function Observer() {
+      "use no memo"
+      const [step, setStepState] = useState(0)
+      const [unrelated, setUnrelatedState] = useState(0)
+      setStep = setStepState
+      setUnrelated = setUnrelatedState
+
+      const { data } = useObserve(() => sources[step]?.counted$, [step])
+
+      return (
+        <>
+          {`${data}:${unrelated}`}
+          <Suspends step={step} />
+        </>
+      )
+    }
+
+    const { container, unmount } = render(
+      <Suspense fallback={null}>
+        <Observer />
+      </Suspense>,
+    )
+
+    await act(async () => {
+      startTransition(() => setStep(1))
+    })
+    await act(async () => {
+      setUnrelated(1)
     })
 
-    vi.advanceTimersByTime(UNCOMMITTED_RENDER_HOLD_MS)
+    expect(container.textContent).toBe("0:1")
 
-    expect(subscriptions.open).toBe(0)
-    expect(store.getSnapshot().data).toBe(1)
+    await act(async () => {
+      pending.resolve()
+      await pending.promise
+    })
 
-    const onChange = vi.fn()
-    const unsubscribe = store.subscribe(onChange)
-    subject.next(2)
+    expect(container.textContent).toBe("1:1")
+    expect(sources.map(({ subscriptions }) => subscriptions)).toEqual([
+      { made: 1, open: 0 },
+      { made: 1, open: 1 },
+    ])
 
-    expect(subscriptions.open).toBe(1)
-    expect(store.getSnapshot().data).toBe(2)
-    expect(onChange).toHaveBeenCalled()
-
-    unsubscribe()
-
-    expect(subscriptions.open).toBe(0)
+    unmount()
   })
 })

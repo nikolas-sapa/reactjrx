@@ -6,8 +6,9 @@ import { countSubscriptions } from "../../../tests/liveQuery"
 import { useObserve } from "./useObserve"
 
 describe("Given a server render", () => {
-  it("renders the value of a BehaviorSubject, and leaves no subscription", () => {
+  it("renders the value of a BehaviorSubject without subscribing to it", () => {
     const subject = new BehaviorSubject(1)
+    const { counted$, subscriptions } = countSubscriptions(subject)
 
     function Observer() {
       "use no memo"
@@ -16,24 +17,31 @@ describe("Given a server render", () => {
       return <>{data}</>
     }
 
+    function CountedObserver() {
+      "use no memo"
+      useObserve(counted$)
+
+      return null
+    }
+
     expect(renderToString(<Observer />)).toBe("1")
-    expect(renderToString(<Observer />)).toBe("1")
-    expect(subject.observed).toBe(false)
+    renderToString(<CountedObserver />)
+    expect(subscriptions.made).toBe(0)
   })
 
-  it("renders the value a live source emits synchronously, and leaves no subscription", () => {
+  it("renders the default value of a source that holds no value, without subscribing to it", () => {
     const { counted$, subscriptions } = countSubscriptions(
       concat(of("first"), NEVER),
     )
 
     function Observer() {
       "use no memo"
-      const { data } = useObserve(counted$)
+      const { data, status } = useObserve(counted$, { defaultValue: "none" })
 
-      return <>{data}</>
+      return <>{`${status}:${data}`}</>
     }
 
-    expect(renderToString(<Observer />)).toBe("first")
-    expect(subscriptions).toEqual({ made: 1, open: 0 })
+    expect(renderToString(<Observer />)).toBe("pending:none")
+    expect(subscriptions.made).toBe(0)
   })
 })
