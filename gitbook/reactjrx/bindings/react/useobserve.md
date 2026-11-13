@@ -1,6 +1,6 @@
 # useObserve
 
-The `useObserve` hook subscribes to an observable and returns its latest value, along with the state of the stream. It is the building block of higher order hooks such as the ones used in [Queries](https://app.gitbook.com/s/uE1Z7PHuhXh0NunQ33Mr/queries "mention").&#x20;
+The `useObserve` hook subscribes to an observable and returns its latest value, along with the state of the stream.
 
 ```typescript
 useObserve(source, optionsOrDeps?, deps?)
@@ -58,7 +58,8 @@ An object with:
 ### **Caveats**&#x20;
 
 * The hook subscribes while rendering, so a source that emits synchronously (`of(x)`, a `BehaviorSubject`, a `ReplaySubject` holding a value) has its value on the first render. A source that emits later returns the default value until it does.
-* The source runs once for the render and the mounted component: React takes over the render's subscription when the component mounts. A render that React throws away (a Suspense boundary that suspends, an error boundary, an abandoned transition) keeps its subscription for 10 seconds, then releases it. On the server, the hook reads what the source emits synchronously, then unsubscribes. A render may never commit, so start writes and other side effects in an effect, not in the source.
+* When the component mounts, React takes over the render's subscription, so the source usually runs once. It runs again when React subscribes more than 10 seconds after the render (a component shown later from a hidden `<Activity>`, a slow commit), and in development under `StrictMode`, which mounts components twice.
+* A render that React throws away (a Suspense boundary that suspends, an error boundary, an abandoned transition) keeps its subscription for 10 seconds, then releases it. Without `window`, the hook takes the render for a server render: it reads what the source emits synchronously, then unsubscribes. A render may never commit, so start writes and other side effects in an effect, not in the source.
 * A new value that `compareFn` considers equal to the previous one doesn't re-render. By default that's strict equality, so a new object with the same content does re-render.
 * An error doesn't throw: the hook returns `status: "error"` with the `error`, keeps the last `data`, and doesn't report the error as unhandled.
 * Once the source has completed or errored, the hook doesn't subscribe to it again. Pass a new source, or change `deps`, to start over.

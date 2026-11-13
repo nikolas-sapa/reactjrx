@@ -347,8 +347,8 @@ describe("Given StrictMode", () => {
 
 describe("Given a mount with browser timing", () => {
   /**
-   * Outside `act`, effects run after pending promises resolve, as in a
-   * browser, so hydration can finish before the mount effects run.
+   * Outside `act`, React runs the effects as a browser does, after pending
+   * promises resolve.
    */
   it("should hydrate once and call onHydrated once", {
     timeout: 3000,

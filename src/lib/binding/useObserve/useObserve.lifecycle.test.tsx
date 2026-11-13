@@ -14,10 +14,6 @@ import { countSubscriptions } from "../../../tests/liveQuery"
 import { ObservableStore } from "./store"
 import { useObserve } from "./useObserve"
 
-/**
- * The time a store keeps the subscription of a render that React does not
- * subscribe to. mobx-react-lite waits as long for the same reason.
- */
 const UNCOMMITTED_RENDER_HOLD_MS = 10_000
 
 const createPendingPromise = () => {
@@ -60,7 +56,7 @@ describe("Given a render that React commits", () => {
     const { unmount, container } = render(<Observer />)
 
     expect(container.textContent).toBe("1")
-    expect(subscriptions.open).toBe(1)
+    expect(subscriptions).toEqual({ made: 1, open: 1 })
 
     unmount()
 
@@ -99,6 +95,7 @@ describe("Given a render that React throws away", () => {
 
   afterEach(() => {
     vi.useRealTimers()
+    vi.restoreAllMocks()
   })
 
   const releaseUncommittedRenders = () =>
@@ -245,7 +242,7 @@ describe("Given a render that React throws away", () => {
     expect(subscriptions.open).toBe(0)
   })
 
-  it("keeps a thrown away render's subscription until the hold ends", async () => {
+  it("keeps a thrown away render's subscription until the hold ends, then releases it", async () => {
     const { counted$, subscriptions } = countSubscriptions(
       new BehaviorSubject(1),
     )
@@ -270,6 +267,12 @@ describe("Given a render that React throws away", () => {
     })
 
     expect(subscriptions.open).toBeGreaterThan(0)
+
+    await act(async () => {
+      vi.advanceTimersByTime(1)
+    })
+
+    expect(subscriptions.open).toBe(0)
   })
 })
 

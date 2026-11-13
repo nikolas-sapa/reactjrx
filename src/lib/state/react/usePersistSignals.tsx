@@ -50,12 +50,8 @@ export function usePersistSignals({
   const adapterSubject = useLiveBehaviorSubject(adapter)
   const entriesSubject = useLiveBehaviorSubject(entries)
 
-  const [result, setResult] = useState({ isHydrated: false })
+  const [isHydrated, setIsHydrated] = useState(false)
 
-  /**
-   * Persisting reads and writes the adapter, so it starts in an effect: a
-   * render that never commits, and a server render, must not touch storage.
-   */
   useEffect(
     function persistWhileMounted() {
       const subscription = adapterSubject
@@ -101,11 +97,7 @@ export function usePersistSignals({
           }),
           map((event) => event.type === "hydrated"),
         )
-        .subscribe((isHydrated) => {
-          setResult((current) =>
-            current.isHydrated === isHydrated ? current : { isHydrated },
-          )
-        })
+        .subscribe(setIsHydrated)
 
       return () => {
         subscription.unsubscribe()
@@ -114,5 +106,5 @@ export function usePersistSignals({
     [adapterSubject, entriesSubject, onHydratedRef],
   )
 
-  return result
+  return { isHydrated }
 }

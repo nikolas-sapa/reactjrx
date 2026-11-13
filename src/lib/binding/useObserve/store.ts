@@ -10,11 +10,8 @@ import {
 import { isServer } from "../../utils/isServer"
 
 /**
- * How long a store keeps the subscription it opens during render while React
- * has not subscribed to it. React subscribes when the render commits. A
- * render that never commits (a Suspense boundary that suspends, an error
- * boundary, an abandoned transition) has nothing else to release it. Long
- * enough for a slow commit, as mobx-react-lite waits for its reactions.
+ * Long enough for a slow commit: React subscribing after the hold ended runs
+ * the source a second time.
  */
 const UNCOMMITTED_RENDER_HOLD_MS = 10_000
 
@@ -34,7 +31,6 @@ export class ObservableStore<T, DefaultValue, Error = unknown> {
   state: State<T, DefaultValue, Error>
   source$: Observable<T | undefined>
   private hold: Subscription
-  private holdTimer: ReturnType<typeof setTimeout> | undefined
 
   constructor({
     source$: miscSource$,
@@ -96,14 +92,13 @@ export class ObservableStore<T, DefaultValue, Error = unknown> {
     /**
      * The store is created during render, and subscribes right away: a source
      * that emits synchronously (a `BehaviorSubject`, `of(x)`, a piped signal)
-     * then has its value on the first render, and the source runs once for
-     * the render and React's subscription together.
+     * then has its value on the first render.
      *
      * This subscription only holds the shared source until React subscribes
-     * in `subscribe`, which releases it. A render that never commits never
-     * subscribes, so a timer releases the hold. A server render never
-     * commits either, so it reads the synchronous values and releases the
-     * hold at once.
+     * in `subscribe`, which releases it, so the source runs once for both. A
+     * render that never commits never subscribes: a timer releases the hold.
+     * A render without `window` is taken as a server render, which never
+     * commits: the hold ends once the synchronous values are read.
      *
      * An error is returned in the state, so it is handled here rather than
      * reported to RxJS as unhandled.
@@ -111,9 +106,13 @@ export class ObservableStore<T, DefaultValue, Error = unknown> {
     this.hold = this.source$.subscribe({ error: () => {} })
 
     if (isServer) {
-      this.releaseHold()
-    } else if (!this.hold.closed) {
-      this.holdTimer = setTimeout(this.releaseHold, UNCOMMITTED_RENDER_HOLD_MS)
+      this.hold.unsubscribe()
+    } else {
+      const holdTimer = setTimeout(() => {
+        this.hold.unsubscribe()
+      }, UNCOMMITTED_RENDER_HOLD_MS)
+
+      this.hold.add(() => clearTimeout(holdTimer))
     }
   }
 
@@ -123,29 +122,17 @@ export class ObservableStore<T, DefaultValue, Error = unknown> {
      * subscribes. It won't emit again, and subscribing to the shared source
      * would only run it a second time.
      */
-    if (this.state.observableState !== "live") {
-      this.releaseHold()
-
-      return () => {}
-    }
-
-    const sub = this.source$.subscribe({
-      complete: next,
-      error: next,
-      next: next,
-    })
+    const sub =
+      this.state.observableState === "live"
+        ? this.source$.subscribe({ complete: next, error: next, next })
+        : Subscription.EMPTY
 
     // Released after React subscribes, so the shared source keeps running.
-    this.releaseHold()
+    this.hold.unsubscribe()
 
     return () => {
       sub.unsubscribe()
     }
-  }
-
-  private releaseHold = () => {
-    clearTimeout(this.holdTimer)
-    this.hold.unsubscribe()
   }
 
   getSnapshot = () => {
